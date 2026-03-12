@@ -3,14 +3,7 @@
 A Python script that listens for rocket/missile siren alerts from the IDF Home Front Command (פיקוד העורף) and flashes a Yeelight smart bulb red, then switches to bright white light.
 
 ## Demo
-
-<video src="https://github.com/Burekasim/OrefMenora/raw/refs/heads/main/demo.mp4"
-       muted
-       loop
-       playsinline
-       controls
-       width="800">
-</video>
+https://github.com/Burekasim/OrefMenora/raw/refs/heads/main/demo.mp4"
 
 ## How it works
 
