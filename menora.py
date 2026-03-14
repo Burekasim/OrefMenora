@@ -190,9 +190,13 @@ def fetch_alert():
     r = requests.get(ALERT_URL, headers=HEADERS, timeout=5)
     r.raise_for_status()
     r.encoding = 'utf-8-sig'
-    if not r.text.strip():
+    text = r.text.strip()
+    if not text:
         return None, []
-    payload = r.json()
+    try:
+        payload = r.json()
+    except ValueError:
+        return None, []
     return payload.get("title"), payload.get("data", [])
 
 
