@@ -32,13 +32,21 @@ from yeelight import Bulb, Flow, RGBTransition
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BULB_IP          = "192.168.1.123"
-TARGET_CITIES    = ["גדרה", "קריית אונו"]
+TARGET_CITIES    = ["קריית אונו", "גדרה"]
 POLL_INTERVAL    = 2    # normal seconds between polls
 FLASH_SECONDS    = 5    # how long to flash red
 BACKOFF_STEPS    = [3, 6, 9]   # escalating intervals on 429
 BACKOFF_RESET    = 300          # seconds until interval resets to normal
 
-ALERT_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
+POST_ALLCLEAR_HOLD = 180   # seconds to stay lit after green blink before restoring state
+STATE_REFRESH_INTERVAL = 3600  # seconds between passive state snapshots (60 min)
+
+ALERT_URL   = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
+TITLE_ALL_CLEAR = "האירוע הסתיים"       # "The event has ended" — all-clear signal
+TITLES_RED  = {
+    "ירי רקטות וטילים",                 # Rocket and missile fire
+    "חדירת כלי טיס עוין",               # Hostile aircraft infiltration
+}
 HEADERS   = {
     "Referer":          "https://www.oref.org.il/",
     "X-Requested-With": "XMLHttpRequest",
@@ -55,6 +63,57 @@ log = logging.getLogger(__name__)
 
 
 # ── Bulb ──────────────────────────────────────────────────────────────────────
+def get_bulb_state(bulb):
+    """Snapshot the full current state of the bulb.
+
+    Returns a dict with keys: power, bright, color_mode, ct, rgb
+      color_mode: 1 = RGB, 2 = color-temp, 3 = HSV
+    Returns None if the bulb is unreachable.
+    """
+    try:
+        props = bulb.get_properties()
+        state = {
+            "power":      props.get("power", "off"),
+            "bright":     int(props.get("bright", 100)),
+            "color_mode": int(props.get("color_mode", 2)),
+            "ct":         int(props.get("ct", 4000)),
+            "rgb":        int(props.get("rgb", 16777215)),
+        }
+        log.info(
+            "📸 Bulb state captured — power=%s  mode=%s  bright=%s  ct=%s  rgb=#%06X",
+            state["power"], state["color_mode"], state["bright"],
+            state["ct"], state["rgb"],
+        )
+        return state
+    except Exception as e:
+        log.warning("Could not read bulb state: %s", e)
+        return None
+
+
+def restore_bulb_state(bulb, state):
+    """Restore the bulb to a previously captured state."""
+    if state is None:
+        log.warning("No saved state to restore — leaving bulb as-is")
+        return
+    log.info(
+        "🔄 Restoring bulb state — power=%s  mode=%s  bright=%s  ct=%s  rgb=#%06X",
+        state["power"], state["color_mode"], state["bright"],
+        state["ct"], state["rgb"],
+    )
+    if state["power"] == "off":
+        bulb_cmd(bulb.turn_off)
+        return
+    bulb_cmd(bulb.turn_on)
+    if state["color_mode"] == 1:   # RGB
+        r = (state["rgb"] >> 16) & 0xFF
+        g = (state["rgb"] >> 8) & 0xFF
+        b = state["rgb"] & 0xFF
+        bulb_cmd(bulb.set_rgb, r, g, b)
+    else:                           # color-temp (mode 2) or HSV (mode 3, best-effort)
+        bulb_cmd(bulb.set_color_temp, state["ct"])
+    bulb_cmd(bulb.set_brightness, state["bright"])
+
+
 def is_bulb_on(bulb):
     """Return True if the bulb is currently powered on."""
     try:
@@ -99,15 +158,42 @@ def flash_red_then_white(bulb):
     bulb_cmd(bulb.turn_on)
 
 
+def blink_green_then_white(bulb, original_state):
+    """Blink green for 10 seconds (all-clear signal), hold bright white for
+    POST_ALLCLEAR_HOLD seconds, then restore the bulb to original_state."""
+    log.info("🟢 ALL CLEAR — blinking green for 10s")
+
+    bulb_cmd(bulb.turn_on)
+    bulb_cmd(bulb.set_brightness, 100)
+    time.sleep(0.3)
+
+    cycle = [
+        RGBTransition(0, 255, 0, duration=500, brightness=100),  # full green
+        RGBTransition(0, 255, 0, duration=500, brightness=5),    # near-off
+    ]
+    bulb_cmd(bulb.start_flow, Flow(count=0, transitions=cycle))
+    time.sleep(10)
+    bulb_cmd(bulb.stop_flow)
+
+    log.info("💡 All-clear done — holding bright white for %ds", POST_ALLCLEAR_HOLD)
+    bulb_cmd(bulb.set_color_temp, 6500)
+    bulb_cmd(bulb.set_brightness, 100)
+    bulb_cmd(bulb.turn_on)
+    time.sleep(POST_ALLCLEAR_HOLD)
+
+    restore_bulb_state(bulb, original_state)
+
+
 # ── Polling ───────────────────────────────────────────────────────────────────
-def fetch_alert_cities():
-    """Return the list of cities currently under alert (empty if none)."""
+def fetch_alert():
+    """Return (title, cities) for the current alert, or (None, []) if no alert."""
     r = requests.get(ALERT_URL, headers=HEADERS, timeout=5)
     r.raise_for_status()
     r.encoding = 'utf-8-sig'
     if not r.text.strip():
-        return []
-    return r.json().get("data", [])
+        return None, []
+    payload = r.json()
+    return payload.get("title"), payload.get("data", [])
 
 
 def main():
@@ -118,6 +204,10 @@ def main():
 
     log.info("Menora started — watching for sirens in %s  (bulb: %s)", TARGET_CITIES, BULB_IP)
 
+    # Snapshot the bulb state at startup so we can restore it after an all-clear
+    original_state     = get_bulb_state(bulb)
+    last_snapshot_time = time.monotonic()
+
     while True:
         # Reset backoff to normal after BACKOFF_RESET seconds
         if backoff_idx > 0 and (time.monotonic() - backoff_since) >= BACKOFF_RESET:
@@ -127,19 +217,32 @@ def main():
 
         interval = BACKOFF_STEPS[backoff_idx - 1] if backoff_idx > 0 else POLL_INTERVAL
 
+        # Refresh the snapshot every 60 min while the bulb is in its normal state
+        # (not mid-alert), so we always restore to the latest user-set state
+        if not alerting and (time.monotonic() - last_snapshot_time) >= STATE_REFRESH_INTERVAL:
+            log.info("⏱️  60-min state refresh")
+            original_state     = get_bulb_state(bulb)
+            last_snapshot_time = time.monotonic()
+
         try:
             if not is_bulb_on(bulb):
-                log.debug("💤 Bulb is off (will turn on before any alert)")
+                log.debug("💡 Bulb is off (will turn on before any alert)")
 
-            cities = fetch_alert_cities()
+            title, cities = fetch_alert()
 
             hit = [c for c in TARGET_CITIES if c in cities]
             if hit:
                 if not alerting:
                     alerting = True
-                    log.info("🚨 SIREN in %s", hit)
-                    flash_red_then_white(bulb)
-                    # flash_red_then_white is blocking — on return the alert
+                    if title == TITLE_ALL_CLEAR:
+                        log.info("🟢 ALL CLEAR in %s", hit)
+                        blink_green_then_white(bulb, original_state)
+                    elif title in TITLES_RED:
+                        log.info("🚨 SIREN in %s — title: %s", hit, title)
+                        flash_red_then_white(bulb)
+                    else:
+                        log.info("⚠️  Unknown alert in %s — title: %s (no light action)", hit, title)
+                    # both functions are blocking — on return the alert
                     # may still be active; we stay in alerting=True until it clears
             else:
                 if alerting:
@@ -174,7 +277,9 @@ if __name__ == "__main__":
         log.info("🧪 Test mode — triggering alert now")
         try:
             bulb = Bulb(BULB_IP)
+            original_state = get_bulb_state(bulb)
             flash_red_then_white(bulb)
+            blink_green_then_white(bulb, original_state)
             log.info("✅ Test complete")
         except Exception as e:
             log.error("Test failed: %s", e)
