@@ -1,15 +1,30 @@
 # Menora 🕯️
 
-A Python script that listens for rocket/missile siren alerts from the IDF Home Front Command (פיקוד העורף) and flashes a Yeelight smart bulb red, then switches to bright white light.
+A Python script that listens for rocket/missile siren alerts from the IDF Home Front Command (פיקוד העורף) and controls a Yeelight smart bulb to give a visual warning.
 
 ## Demo
-https://github.com/Burekasim/OrefMenora/raw/refs/heads/main/demo.mp4"
+
+<video src="https://github.com/Burekasim/OrefMenora/raw/refs/heads/main/demo.mp4" controls width="640"></video>
 
 ## How it works
 
-The script polls the IDF Home Front Command (פיקוד העורף) alert API every 2 seconds. When a siren is detected in any of the configured cities, it flashes the bulb red for 5 seconds and then turns on bright white light — giving you a visual warning even if you're wearing headphones or in a noisy environment.
+The script polls the IDF Home Front Command alert API every 2 seconds.
 
-> **Note:** The IDF Home Front Command website and API (`oref.org.il`) are accessible **from Israel only**. If you are outside Israel, the API will not return alerts.
+**On a siren alert (ירי רקטות וטילים / חדירת כלי טיס עוין):**
+- Flashes the bulb red for 5 seconds
+- Switches to bright white light
+
+**On all-clear (האירוע הסתיים):**
+- Blinks the bulb green for 10 seconds
+- Holds bright white for 3 minutes
+- Restores the bulb to exactly what it was before the script started (color, brightness, on/off state)
+
+**State preservation:**
+- When the script starts, it snapshots the current bulb state (power, color mode, color temperature, RGB, brightness)
+- Every 60 minutes while idle, the snapshot is refreshed — so if you manually change the bulb in between, the restore will reflect your latest settings
+- After the 3-minute hold, the bulb is restored to the most recent snapshot
+
+> **Note:** The IDF Home Front Command API (`oref.org.il`) is accessible **from Israel only**.
 
 ## Hardware
 
@@ -23,35 +38,38 @@ The bulb used in this project: [Yeelight Smart Bulb — KSP ₪87](https://ksp.c
 
 After installing the bulb and setting it up via the Yeelight app, you **must enable LAN control** — it is disabled by default.
 
-Follow the instructions here: https://home.yeelight.de/en/support/lan-control/
+Instructions: https://home.yeelight.de/en/support/lan-control/
 
 Once enabled, the bulb will accept direct TCP commands on your local network.
 
 ### 2. Find your bulb's IP address
 
-Check your router's DHCP table or the Yeelight app to find the bulb's local IP address. It's recommended to assign it a static IP.
+Check your router's DHCP table or the Yeelight app to find the bulb's local IP. It is recommended to assign a static IP so it doesn't change.
 
 ### 3. Install dependencies
-
-```bash
-pip install yeelight requests
-```
-
-Or using the requirements file:
 
 ```bash
 pip install -r requirements.txt
 ```
 
+Or manually:
+
+```bash
+pip install yeelight requests
+```
+
 ### 4. Configure
 
-Edit the top of `menora.py`:
+Edit the constants at the top of `menora.py`:
 
-```python
-BULB_IP       = "192.168.x.x"         # your bulb's local IP
-TARGET_CITIES = ["קריית אונו", "גדרה"]        # list of cities to watch
-FLASH_SECONDS = 5                     # how long to flash red
-```
+| Variable | Description | Default |
+|---|---|---|
+| `BULB_IP` | Local IP address of your Yeelight bulb | `172.18.150.107` |
+| `TARGET_CITIES` | List of Hebrew city names to watch for | `["קריית אונו", "ונוא תירק"]` |
+| `POLL_INTERVAL` | Seconds between API polls | `2` |
+| `FLASH_SECONDS` | How long to flash red on a siren alert | `5` |
+| `POST_ALLCLEAR_HOLD` | Seconds to hold bright white after the green all-clear blink | `180` (3 min) |
+| `STATE_REFRESH_INTERVAL` | Seconds between passive bulb state snapshots | `3600` (60 min) |
 
 ### 5. Run
 
@@ -65,16 +83,30 @@ Test that the bulb reacts correctly before relying on it:
 python3 menora.py --test
 ```
 
-This triggers the flash sequence immediately without waiting for a real alert.
+`--test` mode snapshots the current bulb state, triggers the full red-flash → green-blink → 3-minute hold → restore sequence immediately without waiting for a real alert.
+
+## Alert sequence
+
+```
+Siren detected
+    → 🚨 Red flash for FLASH_SECONDS
+    → 💡 Bright white (stays on until all-clear)
+
+All-clear detected
+    → 🟢 Green blink for 10 seconds
+    → 💡 Bright white hold for POST_ALLCLEAR_HOLD seconds (default: 3 min)
+    → 🔄 Restore bulb to original state (color / brightness / on-off)
+```
 
 ## Rate limiting
 
-If the API returns HTTP 429 (too many requests), the poll interval automatically backs off from 2s → 3s → 6s → 9s and resets back to 2s after 5 minutes.
+If the API returns HTTP 429 (too many requests), the poll interval automatically backs off:
+`2s → 3s → 6s → 9s` and resets back to `2s` after 5 minutes.
 
 ## Requirements
 
 - Python 3.6+
 - `yeelight`
 - `requests`
-- The script must run on a machine that is **on the same local network** as the bulb
-- Must be run **from within Israel** to receive live alerts from the IDF Home Front Command API
+- Must run on a machine **on the same local network** as the bulb
+- Must run **from within Israel** to receive live alerts from the IDF Home Front Command API
