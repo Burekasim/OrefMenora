@@ -44,9 +44,8 @@ STATE_REFRESH_INTERVAL = 3600  # seconds between passive state snapshots (60 min
 ALERT_URL   = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
 TITLE_ALL_CLEAR = "האירוע הסתיים"       # "The event has ended" — all-clear signal
 TITLES_RED  = {
-    "בדקות הקרובות צפויות להתקבל התרעות באזורך",                 # Rockets are on the way
-    "ירי רקטות וטילים",                                          # Rocket and missile fire
-    "חדירת כלי טיס עוין",                                        # Hostile aircraft infiltration
+    "ירי רקטות וטילים",                 # Rocket and missile fire
+    "חדירת כלי טיס עוין",               # Hostile aircraft infiltration
 }
 HEADERS   = {
     "Referer":          "https://www.oref.org.il/",
@@ -230,28 +229,37 @@ def main():
             last_snapshot_time = time.monotonic()
 
         try:
-            if not is_bulb_on(bulb):
+            # Don't query bulb state during an active alert — use the pre-alert snapshot
+            if not alerting and not is_bulb_on(bulb):
                 log.debug("💡 Bulb is off (will turn on before any alert)")
 
             title, cities = fetch_alert()
 
             hit = [c for c in TARGET_CITIES if c in cities]
             if hit:
-                if not alerting:
-                    alerting = True
-                    if title == TITLE_ALL_CLEAR:
+                if title == TITLE_ALL_CLEAR:
+                    # All-clear must be handled even while alerting=True (it arrives
+                    # AFTER the siren, so alerting is always True at this point).
+                    if alerting:
                         log.info("🟢 ALL CLEAR in %s", hit)
                         blink_green_then_white(bulb, original_state)
-                    elif title in TITLES_RED:
+                        alerting = False
+                        last_snapshot_time = time.monotonic()  # don't re-snapshot right after restore
+                elif title in TITLES_RED:
+                    if not alerting:
+                        alerting = True
                         log.info("🚨 SIREN in %s — title: %s", hit, title)
                         flash_red_then_white(bulb)
-                    else:
+                else:
+                    if not alerting:
+                        alerting = True
                         log.info("⚠️  Unknown alert in %s — title: %s (no light action)", hit, title)
-                    # both functions are blocking — on return the alert
-                    # may still be active; we stay in alerting=True until it clears
             else:
                 if alerting:
-                    log.info("✅ Alert cleared")
+                    # Alert ended without an explicit all-clear message — restore anyway
+                    log.info("✅ Alert cleared (no all-clear signal received)")
+                    restore_bulb_state(bulb, original_state)
+                    last_snapshot_time = time.monotonic()
                 alerting = False
 
         except requests.exceptions.HTTPError as e:
