@@ -44,8 +44,9 @@ STATE_REFRESH_INTERVAL = 3600  # seconds between passive state snapshots (60 min
 ALERT_URL   = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
 TITLE_ALL_CLEAR = "האירוע הסתיים"       # "The event has ended" — all-clear signal
 TITLES_RED  = {
-    "ירי רקטות וטילים",                 # Rocket and missile fire
-    "חדירת כלי טיס עוין",               # Hostile aircraft infiltration
+    "בדקות הקרובות צפויות להתקבל התרעות באזורך",                 # Rockets are on the way
+    "ירי רקטות וטילים",                                          # Rocket and missile fire
+    "חדירת כלי טיס עוין",                                        # Hostile aircraft infiltration
 }
 HEADERS   = {
     "Referer":          "https://www.oref.org.il/",
