@@ -159,9 +159,9 @@ def flash_red_then_white(bulb):
 
 
 def blink_green_then_white(bulb, original_state):
-    """Blink green for 10 seconds (all-clear signal), hold bright white for
-    POST_ALLCLEAR_HOLD seconds, then restore the bulb to original_state."""
-    log.info("🟢 ALL CLEAR — blinking green for 10s")
+    """Blink green for 5 seconds (all-clear signal), hold steady green for
+    the remainder of POST_ALLCLEAR_HOLD, then restore the bulb to original_state."""
+    log.info("🟢 ALL CLEAR — blinking green for 5s then holding green for %ds", POST_ALLCLEAR_HOLD)
 
     bulb_cmd(bulb.turn_on)
     bulb_cmd(bulb.set_brightness, 100)
@@ -172,11 +172,11 @@ def blink_green_then_white(bulb, original_state):
         RGBTransition(0, 255, 0, duration=500, brightness=5),    # near-off
     ]
     bulb_cmd(bulb.start_flow, Flow(count=0, transitions=cycle))
-    time.sleep(10)
+    time.sleep(5)
     bulb_cmd(bulb.stop_flow)
 
-    log.info("💡 All-clear done — holding bright white for %ds", POST_ALLCLEAR_HOLD)
-    bulb_cmd(bulb.set_color_temp, 6500)
+    log.info("🟢 Holding steady green for %ds", POST_ALLCLEAR_HOLD)
+    bulb_cmd(bulb.set_rgb, 0, 255, 0)
     bulb_cmd(bulb.set_brightness, 100)
     bulb_cmd(bulb.turn_on)
     time.sleep(POST_ALLCLEAR_HOLD)
@@ -255,12 +255,8 @@ def main():
                         alerting = True
                         log.info("⚠️  Unknown alert in %s — title: %s (no light action)", hit, title)
             else:
-                if alerting:
-                    # Alert ended without an explicit all-clear message — restore anyway
-                    log.info("✅ Alert cleared (no all-clear signal received)")
-                    restore_bulb_state(bulb, original_state)
-                    last_snapshot_time = time.monotonic()
-                alerting = False
+                if not alerting:
+                    alerting = False
 
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:
