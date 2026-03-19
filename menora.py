@@ -38,7 +38,6 @@ FLASH_SECONDS    = 5    # how long to flash red
 BACKOFF_STEPS    = [3, 6, 9]   # escalating intervals on 429
 BACKOFF_RESET    = 300          # seconds until interval resets to normal
 
-POST_ALLCLEAR_HOLD = 180   # seconds to stay lit after green blink before restoring state
 STATE_REFRESH_INTERVAL = 3600  # seconds between passive state snapshots (60 min)
 
 ALERT_URL   = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
@@ -91,8 +90,13 @@ def get_bulb_state(bulb):
         return None
 
 
-def restore_bulb_state(bulb, state):
-    """Restore the bulb to a previously captured state."""
+def restore_bulb_state(bulb, state, retries=3):
+    """Restore the bulb to a previously captured state.
+
+    Retries up to `retries` times (with a short delay between attempts) to
+    handle TCP reconnections and firmware mode-switching glitches that can
+    leave the bulb stuck in the wrong colour after a long sleep.
+    """
     if state is None:
         log.warning("No saved state to restore — leaving bulb as-is")
         return
@@ -101,18 +105,27 @@ def restore_bulb_state(bulb, state):
         state["power"], state["color_mode"], state["bright"],
         state["ct"], state["rgb"],
     )
-    if state["power"] == "off":
-        bulb_cmd(bulb.turn_off)
-        return
-    bulb_cmd(bulb.turn_on)
-    if state["color_mode"] == 1:   # RGB
-        r = (state["rgb"] >> 16) & 0xFF
-        g = (state["rgb"] >> 8) & 0xFF
-        b = state["rgb"] & 0xFF
-        bulb_cmd(bulb.set_rgb, r, g, b)
-    else:                           # color-temp (mode 2) or HSV (mode 3, best-effort)
-        bulb_cmd(bulb.set_color_temp, state["ct"])
-    bulb_cmd(bulb.set_brightness, state["bright"])
+    for attempt in range(1, retries + 1):
+        if attempt > 1:
+            log.warning("🔄 Restore attempt %d/%d", attempt, retries)
+            time.sleep(2)
+        if state["power"] == "off":
+            if bulb_cmd(bulb.turn_off):
+                return
+            continue
+        ok = bulb_cmd(bulb.turn_on)
+        time.sleep(0.3)   # let the bulb settle before changing mode/colour
+        if state["color_mode"] == 1:   # RGB
+            r = (state["rgb"] >> 16) & 0xFF
+            g = (state["rgb"] >> 8) & 0xFF
+            b = state["rgb"] & 0xFF
+            ok = bulb_cmd(bulb.set_rgb, r, g, b) and ok
+        else:                           # color-temp (mode 2) or HSV (mode 3, best-effort)
+            ok = bulb_cmd(bulb.set_color_temp, state["ct"]) and ok
+        ok = bulb_cmd(bulb.set_brightness, state["bright"]) and ok
+        if ok:
+            return
+    log.error("❌ Failed to restore bulb state after %d attempts", retries)
 
 
 def is_bulb_on(bulb):
@@ -159,10 +172,10 @@ def flash_red_then_white(bulb):
     bulb_cmd(bulb.turn_on)
 
 
-def blink_green_then_white(bulb, original_state):
-    """Blink green for 5 seconds (all-clear signal), hold steady green for
-    the remainder of POST_ALLCLEAR_HOLD, then restore the bulb to original_state."""
-    log.info("🟢 ALL CLEAR — blinking green for 5s then holding green for %ds", POST_ALLCLEAR_HOLD)
+def blink_green_then_restore(bulb, original_state):
+    """Blink green for 10 seconds (all-clear signal), then restore the bulb
+    to original_state."""
+    log.info("🟢 ALL CLEAR — blinking green for 10s then restoring")
 
     bulb_cmd(bulb.turn_on)
     bulb_cmd(bulb.set_brightness, 100)
@@ -173,14 +186,8 @@ def blink_green_then_white(bulb, original_state):
         RGBTransition(0, 255, 0, duration=500, brightness=5),    # near-off
     ]
     bulb_cmd(bulb.start_flow, Flow(count=0, transitions=cycle))
-    time.sleep(5)
+    time.sleep(10)
     bulb_cmd(bulb.stop_flow)
-
-    log.info("🟢 Holding steady green for %ds", POST_ALLCLEAR_HOLD)
-    bulb_cmd(bulb.set_rgb, 0, 255, 0)
-    bulb_cmd(bulb.set_brightness, 100)
-    bulb_cmd(bulb.turn_on)
-    time.sleep(POST_ALLCLEAR_HOLD)
 
     restore_bulb_state(bulb, original_state)
 
@@ -243,7 +250,7 @@ def main():
                     # AFTER the siren, so alerting is always True at this point).
                     if alerting:
                         log.info("🟢 ALL CLEAR in %s", hit)
-                        blink_green_then_white(bulb, original_state)
+                        blink_green_then_restore(bulb, original_state)
                         alerting = False
                         last_snapshot_time = time.monotonic()  # don't re-snapshot right after restore
                 elif title in TITLES_RED:
@@ -289,7 +296,7 @@ if __name__ == "__main__":
             bulb = Bulb(BULB_IP)
             original_state = get_bulb_state(bulb)
             flash_red_then_white(bulb)
-            blink_green_then_white(bulb, original_state)
+            blink_green_then_restore(bulb, original_state)
             log.info("✅ Test complete")
         except Exception as e:
             log.error("Test failed: %s", e)

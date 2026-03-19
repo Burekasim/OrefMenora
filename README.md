@@ -16,13 +16,12 @@ The script polls the IDF Home Front Command alert API every 2 seconds.
 
 **On all-clear (האירוע הסתיים):**
 - Blinks the bulb green for 10 seconds
-- Holds bright white for 3 minutes
-- Restores the bulb to exactly what it was before the script started (color, brightness, on/off state)
+- Restores the bulb to exactly what it was before the alarm (color, brightness, on/off state)
 
 **State preservation:**
 - When the script starts, it snapshots the current bulb state (power, color mode, color temperature, RGB, brightness)
 - Every 60 minutes while idle, the snapshot is refreshed — so if you manually change the bulb in between, the restore will reflect your latest settings
-- After the 3-minute hold, the bulb is restored to the most recent snapshot
+- After the green blink, the bulb is restored to the most recent snapshot
 
 > **Note:** The IDF Home Front Command API (`oref.org.il`) is accessible **from Israel only**.
 
@@ -68,7 +67,6 @@ Edit the constants at the top of `menora.py`:
 | `TARGET_CITIES` | List of Hebrew city names to watch for | `["קריית אונו", "ונוא תירק"]` |
 | `POLL_INTERVAL` | Seconds between API polls | `2` |
 | `FLASH_SECONDS` | How long to flash red on a siren alert | `5` |
-| `POST_ALLCLEAR_HOLD` | Seconds to hold bright white after the green all-clear blink | `180` (3 min) |
 | `STATE_REFRESH_INTERVAL` | Seconds between passive bulb state snapshots | `3600` (60 min) |
 
 ### 5. Run
@@ -83,7 +81,7 @@ Test that the bulb reacts correctly before relying on it:
 python3 menora.py --test
 ```
 
-`--test` mode snapshots the current bulb state, triggers the full red-flash → green-blink → 3-minute hold → restore sequence immediately without waiting for a real alert.
+`--test` mode snapshots the current bulb state, triggers the full red-flash → green-blink → restore sequence immediately without waiting for a real alert.
 
 ## Alert sequence
 
@@ -94,8 +92,7 @@ Siren detected
 
 All-clear detected
     → 🟢 Green blink for 10 seconds
-    → 💡 Bright white hold for POST_ALLCLEAR_HOLD seconds (default: 3 min)
-    → 🔄 Restore bulb to original state (color / brightness / on-off)
+    → 🔄 Restore bulb to pre-alarm state (color / brightness / on-off)
 ```
 
 ## Rate limiting
